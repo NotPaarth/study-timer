@@ -16,7 +16,7 @@ import {
   AlertTriangle,
 } from "lucide-react"
 import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, differenceInDays, isWithinInterval } from "date-fns"
-import type { Subject, Task, TimeLog, QuestionGoal } from "@/lib/types"
+import type { Subject, Task, TimeLog, QuestionGoal, TestRecord } from "@/lib/types"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts"
 import { useTheme } from "next-themes"
 import { toast } from "@/components/ui/use-toast"
@@ -33,14 +33,17 @@ import {
 interface WeeklyReportProps {
   timeLogs: TimeLog[]
   tasks: Task[]
+  tests: TestRecord[]
   questionGoal: QuestionGoal
 }
 
 // Colors for the different subjects
-const SUBJECT_COLORS = {
+const SUBJECT_COLORS: Record<Subject, string> = {
   physics: "#3b82f6", // blue
   chemistry: "#10b981", // green
   mathematics: "#f59e0b", // amber
+  botany: "#22c55e", // emerald
+  zoology: "#14b8a6", // teal
   classes: "#8b5cf6", // purple
 }
 
@@ -65,7 +68,7 @@ const detectBrowser = () => {
   }
 }
 
-export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyReportProps) {
+export default function WeeklyReport({ timeLogs, tasks, tests, questionGoal }: WeeklyReportProps) {
   const [currentWeekStart, setCurrentWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }))
   const [isExporting, setIsExporting] = useState(false)
   const [showBrowserWarning, setShowBrowserWarning] = useState(false)
@@ -148,6 +151,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
       physics: 0,
       chemistry: 0,
       mathematics: 0,
+      botany: 0,
+      zoology: 0,
       classes: 0,
     }
 
@@ -164,6 +169,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
       physics: 0,
       chemistry: 0,
       mathematics: 0,
+      botany: 0,
+      zoology: 0,
       classes: 0,
     }
 
@@ -180,6 +187,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
       physics: 0,
       chemistry: 0,
       mathematics: 0,
+      botany: 0,
+      zoology: 0,
       classes: 0,
     }
 
@@ -196,6 +205,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
       physics: 0,
       chemistry: 0,
       mathematics: 0,
+      botany: 0,
+      zoology: 0,
       classes: 0,
     }
 
@@ -221,13 +232,16 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
       dayDate.setDate(currentWeekStart.getDate() + index)
 
       // Initialize with zero values
-      const result: any = { name: day, date: format(dayDate, "MMM d") }
-
-      // Add subject times
-      const subjects: Subject[] = ["physics", "chemistry", "mathematics", "classes"]
-      subjects.forEach((subject) => {
-        result[subject] = 0
-      })
+      const result = {
+        name: day,
+        date: format(dayDate, "MMM d"),
+        physics: 0,
+        chemistry: 0,
+        mathematics: 0,
+        botany: 0,
+        zoology: 0,
+        classes: 0,
+      }
 
       // Fill in actual data
       currentWeekLogs.forEach((log) => {
@@ -261,6 +275,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
         physics: 0,
         chemistry: 0,
         mathematics: 0,
+        botany: 0,
+        zoology: 0,
         total: 0,
       }
 
@@ -351,7 +367,12 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
     // Check for study consistency
     const daysWithStudy = dailyStudyData.filter((day) =>
       Object.entries(day).some(
-        ([key, value]) => ["physics", "chemistry", "mathematics", "classes"].includes(key) && value > 0,
+        ([key, value]) => {
+          if (typeof value === 'number' && ["physics", "chemistry", "mathematics", "botany", "zoology", "classes"].includes(key)) {
+            return value > 0;
+          }
+          return false;
+        }
       ),
     ).length
 
@@ -446,9 +467,9 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
 
       // Add daily breakdown
       csvContent += "\nDaily Breakdown\n"
-      csvContent += "Day,Physics,Chemistry,Mathematics,Classes,Total\n"
+      csvContent += "Day,Physics,Chemistry,Mathematics,Botany,Zoology,Classes,Total\n"
       dailyStudyData.forEach((day) => {
-        const total = day.physics + day.chemistry + day.mathematics + day.classes
+        const total = day.physics + day.chemistry + day.mathematics + day.botany + day.zoology + day.classes
         csvContent +=
           day.name +
           "," +
@@ -457,6 +478,10 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
           day.chemistry +
           "," +
           day.mathematics +
+          "," +
+          day.botany +
+          "," +
+          day.zoology +
           "," +
           day.classes +
           "," +
@@ -466,7 +491,7 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
 
       // Add daily question breakdown
       csvContent += "\nDaily Question Breakdown\n"
-      csvContent += "Day,Physics,Chemistry,Mathematics,Total,Daily Goal\n"
+      csvContent += "Day,Physics,Chemistry,Mathematics,Botany,Zoology,Total,Daily Goal\n"
       dailyQuestionData.forEach((day) => {
         csvContent +=
           day.name +
@@ -476,6 +501,10 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
           day.chemistry +
           "," +
           day.mathematics +
+          "," +
+          day.botany +
+          "," +
+          day.zoology +
           "," +
           day.total +
           "," +
@@ -550,153 +579,165 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
 
       setIsExporting(true)
 
-      // Dynamically import jsPDF and jspdf-autotable
-      const jsPDFModule = await import("jspdf")
-      const jsPDF = jsPDFModule.default
-      await import("jspdf-autotable")
+      try {
+        // Use require instead of dynamic import for better V0 compatibility
+        const jsPDF = require('jspdf').default;
+        require('jspdf-autotable');
+        
+        const doc = new jsPDF();
 
-      const doc = new jsPDF()
+        // Add title
+        doc.setFontSize(18)
+        doc.text(
+          `Weekly Study Report: ${format(currentWeekStart, "MMM d")} - ${format(currentWeekEnd, "MMM d, yyyy")}`,
+          105,
+          15,
+          { align: "center" }
+        )
 
-      // Add title
-      doc.setFontSize(18)
-      doc.text(
-        `Weekly Study Report: ${format(currentWeekStart, "MMM d")} - ${format(currentWeekEnd, "MMM d, yyyy")}`,
-        105,
-        15,
-        { align: "center" },
-      )
-
-      // Add summary section
-      doc.setFontSize(14)
-      doc.text("Study Summary", 14, 30)
-
-      doc.setFontSize(12)
-      doc.text(`Total Study Time: ${formatTime(currentWeekTotalTime)}`, 14, 40)
-      doc.text(
-        `vs Previous Week: ${formatTime(previousWeekTotalTime)} (${calculateChange(currentWeekTotalTime, previousWeekTotalTime)}%)`,
-        14,
-        48,
-      )
-      doc.text(`Total Questions: ${currentWeekTotalQuestions}/${weeklyQuestionGoal}`, 14, 56)
-      doc.text(
-        `vs Previous Week: ${previousWeekTotalQuestions} (${calculateChange(currentWeekTotalQuestions, previousWeekTotalQuestions)}%)`,
-        14,
-        64,
-      )
-      doc.text(`Task Completion Rate: ${taskCompletionRate}%`, 14, 72)
-
-      // Add subject breakdown table
-      doc.setFontSize(14)
-      doc.text("Subject Breakdown", 14, 85)
-
-      const subjectData = Object.entries(currentWeekTimeBySubject).map(([subject, time]) => {
-        const prevTime = previousWeekTimeBySubject[subject as Subject]
-        const questions = currentWeekQuestionsBySubject[subject as Subject]
-        const prevQuestions = previousWeekQuestionsBySubject[subject as Subject]
-
-        return [
-          subject.charAt(0).toUpperCase() + subject.slice(1),
-          formatTime(time),
-          `${calculateChange(time, prevTime)}%`,
-          subject === "classes" ? "N/A" : questions.toString(),
-          subject === "classes" ? "N/A" : `${calculateChange(questions, prevQuestions)}%`,
-        ]
-      })
-
-      // @ts-ignore - jspdf-autotable types
-      doc.autoTable({
-        startY: 90,
-        head: [["Subject", "Time", "Change", "Questions", "Change"]],
-        body: subjectData,
-        theme: "striped",
-        headStyles: { fillColor: [51, 51, 51] },
-      })
-
-      // Add daily question breakdown
-      const tableEndY = (doc as any).lastAutoTable.finalY + 10
-      doc.setFontSize(14)
-      doc.text("Daily Question Progress", 14, tableEndY)
-
-      // @ts-ignore - jspdf-autotable types
-      doc.autoTable({
-        startY: tableEndY + 5,
-        head: [["Day", "Physics", "Chemistry", "Mathematics", "Total", "Goal"]],
-        body: dailyQuestionData.map((day) => [
-          `${day.name} (${day.date})`,
-          day.physics,
-          day.chemistry,
-          day.mathematics,
-          day.total,
-          dailyQuestionGoal,
-        ]),
-        theme: "striped",
-        headStyles: { fillColor: [51, 51, 51] },
-      })
-
-      // Add recommendations
-      const recommendations = generateRecommendations()
-      const questionsTableEndY = (doc as any).lastAutoTable.finalY + 10
-
-      doc.setFontSize(14)
-      doc.text("Recommendations", 14, questionsTableEndY)
-
-      doc.setFontSize(12)
-      recommendations.forEach((recommendation, index) => {
-        doc.text(`• ${recommendation}`, 14, questionsTableEndY + 10 + index * 8)
-      })
-
-      // Add study sessions with goals and notes
-      const sessionsWithGoals = currentWeekLogs.filter((log) => log.goalId || log.notes)
-
-      if (sessionsWithGoals.length > 0) {
-        const recEndY = questionsTableEndY + 10 + recommendations.length * 8 + 10
-
+        // Add summary section
         doc.setFontSize(14)
-        doc.text("Study Sessions with Goals & Notes", 14, recEndY)
+        doc.text("Study Summary", 14, 30)
+
+        doc.setFontSize(12)
+        doc.text(`Total Study Time: ${formatTime(currentWeekTotalTime)}`, 14, 40)
+        doc.text(
+          `vs Previous Week: ${formatTime(previousWeekTotalTime)} (${calculateChange(currentWeekTotalTime, previousWeekTotalTime)}%)`,
+          14,
+          48,
+        )
+        doc.text(`Total Questions: ${currentWeekTotalQuestions}/${weeklyQuestionGoal}`, 14, 56)
+        doc.text(
+          `vs Previous Week: ${previousWeekTotalQuestions} (${calculateChange(currentWeekTotalQuestions, previousWeekTotalQuestions)}%)`,
+          14,
+          64,
+        )
+        doc.text(`Task Completion Rate: ${taskCompletionRate}%`, 14, 72)
+
+        // Add subject breakdown table
+        doc.setFontSize(14)
+        doc.text("Subject Breakdown", 14, 85)
+
+        const subjectData = Object.entries(currentWeekTimeBySubject).map(([subject, time]) => {
+          const prevTime = previousWeekTimeBySubject[subject as Subject]
+          const questions = currentWeekQuestionsBySubject[subject as Subject]
+          const prevQuestions = previousWeekQuestionsBySubject[subject as Subject]
+
+          return [
+            subject.charAt(0).toUpperCase() + subject.slice(1),
+            formatTime(time),
+            `${calculateChange(time, prevTime)}%`,
+            subject === "classes" ? "N/A" : questions.toString(),
+            subject === "classes" ? "N/A" : `${calculateChange(questions, prevQuestions)}%`,
+          ]
+        })
 
         // @ts-ignore - jspdf-autotable types
         doc.autoTable({
-          startY: recEndY + 5,
-          head: [["Day", "Subject", "Duration", "Questions", "Goal", "Notes"]],
-          body: sessionsWithGoals.map((log) => [
-            format(new Date(log.startTime), "EEE, MMM d"),
-            log.subject.charAt(0).toUpperCase() + log.subject.slice(1),
-            formatTime(log.duration),
-            log.subject === "classes" ? "N/A" : log.questionCount,
-            log.goalTitle || "No specific goal",
-            log.notes || "",
+          startY: 90,
+          head: [["Subject", "Time", "Change", "Questions", "Change"]],
+          body: subjectData,
+          theme: "striped",
+          headStyles: { fillColor: [51, 51, 51] },
+        })
+
+        // Add daily question breakdown
+        const tableEndY = (doc as any).lastAutoTable.finalY + 10
+        doc.setFontSize(14)
+        doc.text("Daily Question Progress", 14, tableEndY)
+
+        // @ts-ignore - jspdf-autotable types
+        doc.autoTable({
+          startY: tableEndY + 5,
+          head: [["Day", "Physics", "Chemistry", "Mathematics", "Botany", "Zoology", "Total", "Goal"]],
+          body: dailyQuestionData.map((day) => [
+            `${day.name} (${day.date})`,
+            day.physics,
+            day.chemistry,
+            day.mathematics,
+            day.botany,
+            day.zoology,
+            day.total,
+            dailyQuestionGoal,
           ]),
           theme: "striped",
           headStyles: { fillColor: [51, 51, 51] },
-          columnStyles: {
-            5: { cellWidth: "auto" },
-          },
-          styles: {
-            overflow: "linebreak",
-            cellPadding: 3,
-          },
         })
-      }
 
-      // Add footer
-      const pageCount = doc.internal.getNumberOfPages()
-      doc.setFontSize(10)
-      for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i)
-        doc.text(
-          `Generated on ${format(new Date(), "MMMM d, yyyy")} | Study Tracker App`,
-          105,
-          doc.internal.pageSize.height - 10,
-          { align: "center" },
-        )
-      }
+        // Add recommendations
+        const recommendations = generateRecommendations()
+        const questionsTableEndY = (doc as any).lastAutoTable.finalY + 10
 
-      // Save the PDF
-      doc.save(`study-report-${format(currentWeekStart, "yyyy-MM-dd")}.pdf`)
-      toast({
-        title: "Report Downloaded",
-        description: "Your weekly study report has been downloaded as a PDF.",
-      })
+        doc.setFontSize(14)
+        doc.text("Recommendations", 14, questionsTableEndY)
+
+        doc.setFontSize(12)
+        recommendations.forEach((recommendation, index) => {
+          doc.text(`• ${recommendation}`, 14, questionsTableEndY + 10 + index * 8)
+        })
+
+        // Add study sessions with goals and notes
+        const sessionsWithGoals = currentWeekLogs.filter((log) => log.goalId || log.notes)
+
+        if (sessionsWithGoals.length > 0) {
+          const recEndY = questionsTableEndY + 10 + recommendations.length * 8 + 10
+
+          doc.setFontSize(14)
+          doc.text("Study Sessions with Goals & Notes", 14, recEndY)
+
+          // @ts-ignore - jspdf-autotable types
+          doc.autoTable({
+            startY: recEndY + 5,
+            head: [["Day", "Subject", "Duration", "Questions", "Goal", "Notes"]],
+            body: sessionsWithGoals.map((log) => [
+              format(new Date(log.startTime), "EEE, MMM d"),
+              log.subject.charAt(0).toUpperCase() + log.subject.slice(1),
+              formatTime(log.duration),
+              log.subject === "classes" ? "N/A" : log.questionCount,
+              log.goalTitle || "No specific goal",
+              log.notes || "",
+            ]),
+            theme: "striped",
+            headStyles: { fillColor: [51, 51, 51] },
+            columnStyles: {
+              5: { cellWidth: "auto" },
+            },
+            styles: {
+              overflow: "linebreak",
+              cellPadding: 3,
+            },
+          })
+        }
+
+        // Add footer
+        const pageCount = doc.internal.getNumberOfPages()
+        doc.setFontSize(10)
+        for (let i = 1; i <= pageCount; i++) {
+          doc.setPage(i)
+          doc.text(
+            `Generated on ${format(new Date(), "MMMM d, yyyy")} | Study Tracker App`,
+            105,
+            doc.internal.pageSize.height - 10,
+            { align: "center" },
+          )
+        }
+
+        // Save the PDF
+        doc.save(`study-report-${format(currentWeekStart, "yyyy-MM-dd")}.pdf`)
+        toast({
+          title: "Report Downloaded",
+          description: "Your weekly study report has been downloaded as a PDF.",
+        })
+      } catch (importError) {
+        console.error("Error loading PDF libraries:", importError);
+        toast({
+          title: "PDF Generation Failed",
+          description: "Could not load PDF generation libraries. Please try the CSV export option instead.",
+          variant: "destructive",
+        });
+        exportReportAsCSV();
+        return;
+      }
     } catch (error) {
       console.error("Error generating PDF:", error)
       toast({
@@ -734,6 +775,30 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
       setIsExporting(false)
     }
   }
+
+  // Add test performance section
+  const weeklyTestStats = useMemo(() => {
+    return tests
+      .filter(test => {
+        const testDate = new Date(test.date)
+        return testDate >= currentWeekStart && testDate <= currentWeekEnd
+      })
+      .reduce((acc, test) => {
+        Object.entries(test.subjectData).forEach(([subject, data]) => {
+          if (!acc[subject as Subject]) {
+            acc[subject as Subject] = {
+              totalTests: 0,
+              totalScore: 0,
+              totalAccuracy: 0,
+            }
+          }
+          acc[subject as Subject].totalTests++
+          acc[subject as Subject].totalScore += data.score
+          acc[subject as Subject].totalAccuracy += (data.correctAnswers / data.questionsAttempted) * 100
+        })
+        return acc
+      }, {} as Record<Subject, { totalTests: number; totalScore: number; totalAccuracy: number }>)
+  }, [tests, currentWeekStart, currentWeekEnd])
 
   const recommendations = generateRecommendations()
 
@@ -948,6 +1013,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
                   <th className="text-left p-2 border-b">Physics</th>
                   <th className="text-left p-2 border-b">Chemistry</th>
                   <th className="text-left p-2 border-b">Mathematics</th>
+                  <th className="text-left p-2 border-b">Botany</th>
+                  <th className="text-left p-2 border-b">Zoology</th>
                   <th className="text-left p-2 border-b">Total</th>
                   <th className="text-left p-2 border-b">Goal</th>
                   <th className="text-left p-2 border-b">Progress</th>
@@ -960,6 +1027,8 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
                     <td className="p-2">{day.physics}</td>
                     <td className="p-2">{day.chemistry}</td>
                     <td className="p-2">{day.mathematics}</td>
+                    <td className="p-2">{day.botany}</td>
+                    <td className="p-2">{day.zoology}</td>
                     <td className="p-2 font-medium">{day.total}</td>
                     <td className="p-2">{dailyQuestionGoal}</td>
                     <td className="p-2">
@@ -1163,12 +1232,14 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
                   contentStyle={
                     isDarkMode ? { backgroundColor: "#1f2937", borderColor: "#374151", color: "#f9fafb" } : undefined
                   }
-                  formatter={(value, name) => [`${value} min`, name.charAt(0).toUpperCase() + name.slice(1)]}
+                  formatter={(value: number, name: string) => [`${value} min`, name.charAt(0).toUpperCase() + name.slice(1)]}
                 />
                 <Legend wrapperStyle={isDarkMode ? { color: "#f9fafb" } : undefined} />
                 <Bar dataKey="physics" name="Physics" fill={SUBJECT_COLORS.physics} />
                 <Bar dataKey="chemistry" name="Chemistry" fill={SUBJECT_COLORS.chemistry} />
                 <Bar dataKey="mathematics" name="Mathematics" fill={SUBJECT_COLORS.mathematics} />
+                <Bar dataKey="botany" name="Botany" fill={SUBJECT_COLORS.botany} />
+                <Bar dataKey="zoology" name="Zoology" fill={SUBJECT_COLORS.zoology} />
                 <Bar dataKey="classes" name="Classes" fill={SUBJECT_COLORS.classes} />
               </BarChart>
             </ResponsiveContainer>
@@ -1186,19 +1257,23 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
               <th className="border p-2 text-left">Physics (min)</th>
               <th className="border p-2 text-left">Chemistry (min)</th>
               <th className="border p-2 text-left">Mathematics (min)</th>
+              <th className="border p-2 text-left">Botany (min)</th>
+              <th className="border p-2 text-left">Zoology (min)</th>
               <th className="border p-2 text-left">Classes (min)</th>
               <th className="border p-2 text-left">Total (min)</th>
             </tr>
           </thead>
           <tbody>
             {dailyStudyData.map((day) => {
-              const total = day.physics + day.chemistry + day.mathematics + day.classes
+              const total = day.physics + day.chemistry + day.mathematics + day.botany + day.zoology + day.classes
               return (
                 <tr key={day.name}>
                   <td className="border p-2">{`${day.name} (${day.date})`}</td>
                   <td className="border p-2">{day.physics}</td>
                   <td className="border p-2">{day.chemistry}</td>
                   <td className="border p-2">{day.mathematics}</td>
+                  <td className="border p-2">{day.botany}</td>
+                  <td className="border p-2">{day.zoology}</td>
                   <td className="border p-2">{day.classes}</td>
                   <td className="border p-2 font-medium">{total}</td>
                 </tr>
@@ -1206,6 +1281,34 @@ export default function WeeklyReport({ timeLogs, tasks, questionGoal }: WeeklyRe
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* Test Performance Section */}
+      <div className="mt-8">
+        <h3 className="text-lg font-semibold mb-4">Weekly Test Performance</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {Object.entries(weeklyTestStats).map(([subject, stats]) => (
+            <Card key={subject}>
+              <CardContent className="pt-6">
+                <h4 className="font-medium capitalize mb-4">{subject}</h4>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Tests Taken</span>
+                    <span>{stats.totalTests}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Avg Score</span>
+                    <span>{(stats.totalScore / stats.totalTests).toFixed(1)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Avg Accuracy</span>
+                    <span>{(stats.totalAccuracy / stats.totalTests).toFixed(1)}%</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
 
       {/* Recommendations */}

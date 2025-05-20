@@ -8,17 +8,19 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
-import type { Subject, Task, QuestionGoal } from "@/lib/types"
+import { DEFAULT_EXAM_CONFIGS } from "@/lib/types"
+import type { Subject, Task, QuestionGoal, UserSettings } from "@/lib/types"
 
 interface StudyTimerProps {
   activeSubject: Subject
   isRunning: boolean
   time: number
   questionCount: number
-  tasks: Task[] // Add tasks prop
+  tasks: Task[]
   questionGoal: QuestionGoal
+  settings: UserSettings
   onChangeSubject: (subject: Subject) => void
-  onStart: (goalId?: string, goalTitle?: string) => void // Update to include goal
+  onStart: (goalId?: string, goalTitle?: string) => void
   onPause: () => void
   onQuestionCountChange: (count: number) => void
   onUpdateQuestionGoal: (newGoal: number) => void
@@ -29,8 +31,9 @@ export default function StudyTimer({
   isRunning,
   time,
   questionCount,
-  tasks, // Add tasks
+  tasks,
   questionGoal,
+  settings,
   onChangeSubject,
   onStart,
   onPause,
@@ -39,6 +42,12 @@ export default function StudyTimer({
 }: StudyTimerProps) {
   const [showGoalSettings, setShowGoalSettings] = useState(false)
   const [newDailyGoal, setNewDailyGoal] = useState(questionGoal.daily)
+
+  // Get exam config based on settings
+  const examConfig = DEFAULT_EXAM_CONFIGS[settings.examType]
+
+  // Get available subjects for the current exam type (excluding classes)
+  const subjects = Object.keys(examConfig.subjectMarks).concat("classes") as Subject[]
 
   // Format time as HH:MM:SS
   const formatTime = (seconds: number) => {
@@ -70,6 +79,11 @@ export default function StudyTimer({
     }
   }
 
+  // Get display name for a subject
+  const getSubjectDisplayName = (subject: string) => {
+    return settings.customSubjectNames[subject] || subject
+  }
+
   // Filter tasks by active subject
   const subjectTasks = tasks.filter((task) => task.subject === activeSubject && !task.completed)
 
@@ -86,16 +100,17 @@ export default function StudyTimer({
       </CardHeader>
       <CardContent>
         <Tabs
-          defaultValue="physics"
+          defaultValue={subjects[0]}
           value={activeSubject}
           onValueChange={(value) => onChangeSubject(value as Subject)}
           className="mb-6"
         >
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="physics">Physics</TabsTrigger>
-            <TabsTrigger value="chemistry">Chemistry</TabsTrigger>
-            <TabsTrigger value="mathematics">Mathematics</TabsTrigger>
-            <TabsTrigger value="classes">Classes</TabsTrigger>
+          <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${subjects.length}, 1fr)` }}>
+            {subjects.map(subject => (
+              <TabsTrigger key={subject} value={subject} className="capitalize">
+                {getSubjectDisplayName(subject)}
+              </TabsTrigger>
+            ))}
           </TabsList>
         </Tabs>
 
@@ -148,7 +163,7 @@ export default function StudyTimer({
                   variant="ghost"
                   size="icon"
                   onClick={decrementQuestionCount}
-                  disabled={questionCount === 0}
+                  disabled={!isRunning || questionCount === 0}
                   className="h-10 w-10 rounded-full"
                 >
                   <Minus size={18} />
@@ -157,7 +172,13 @@ export default function StudyTimer({
                   <span className="text-xl font-medium">{questionCount}</span>
                   <span className="text-xs text-muted-foreground ml-1">questions</span>
                 </div>
-                <Button variant="ghost" size="icon" onClick={incrementQuestionCount} className="h-10 w-10 rounded-full">
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={incrementQuestionCount} 
+                  disabled={!isRunning}
+                  className="h-10 w-10 rounded-full"
+                >
                   <Plus size={18} />
                 </Button>
               </div>
@@ -183,7 +204,7 @@ export default function StudyTimer({
                 onChange={(e) => setNewDailyGoal(Number.parseInt(e.target.value) || questionGoal.daily)}
               />
               <p className="text-sm text-muted-foreground">
-                Set your daily target for questions to solve across Physics, Chemistry, and Mathematics.
+                Set your daily target for questions to solve across all subjects.
               </p>
             </div>
           </div>

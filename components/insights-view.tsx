@@ -1,9 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import type { Subject, Task, TimeLog, QuestionGoal } from "@/lib/types"
+import type { Subject, Task, TimeLog, QuestionGoal, TestRecord, UserSettings } from "@/lib/types"
+import { DEFAULT_EXAM_CONFIGS } from "@/lib/types"
 import {
   BarChart,
   Bar,
@@ -16,20 +17,27 @@ import {
   PieChart,
   Pie,
   Cell,
+  LineChart,
+  Line,
 } from "recharts"
 import { useTheme } from "next-themes"
 import StudyLogs from "./study-logs"
 import WeeklyReport from "./weekly-report"
 import DailyReport from "./daily-report"
+import { format } from "date-fns"
+import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 interface InsightsViewProps {
   timeLogs: TimeLog[]
   tasks: Task[]
+  tests: TestRecord[]
   questionGoal: QuestionGoal
-  onDeleteLog: (logId: string) => void
-  onEditLogEndTime: (logId: string, newEndTime: string) => void
-  onEditLogQuestionCount: (logId: string, newQuestionCount: number) => void
-  onEditLogNotes: (logId: string, newNotes: string) => void
+  settings: UserSettings
+  onDeleteLog: (id: string) => void
+  onEditLogEndTime: (id: string, newEndTime: string) => void
+  onEditLogQuestionCount: (id: string, newQuestionCount: number) => void
+  onEditLogNotes: (id: string, newNotes: string) => void
   onAddManualLog: (
     subject: Subject,
     startTime: string,
@@ -47,13 +55,17 @@ const SUBJECT_COLORS = {
   physics: "#3b82f6", // blue
   chemistry: "#10b981", // green
   mathematics: "#f59e0b", // amber
+  botany: "#22c55e", // emerald
+  zoology: "#ef4444", // red
   classes: "#8b5cf6", // purple
 }
 
 export default function InsightsView({
   timeLogs,
   tasks,
+  tests,
   questionGoal,
+  settings,
   onDeleteLog,
   onEditLogEndTime,
   onEditLogQuestionCount,
@@ -69,7 +81,15 @@ export default function InsightsView({
   // Filter logs based on the selected time frame
   const getFilteredLogs = () => {
     const now = new Date()
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const today = new Date()
+    
+    // Set today to 4:30 AM of the current day
+    today.setHours(4, 30, 0, 0)
+    
+    // If current time is before 4:30 AM, we should look at logs since 4:30 AM of the previous day
+    if (now.getHours() < 4 || (now.getHours() === 4 && now.getMinutes() < 30)) {
+      today.setDate(today.getDate() - 1)
+    }
 
     return timeLogs.filter((log) => {
       const logDate = new Date(log.timestamp)
@@ -79,9 +99,10 @@ export default function InsightsView({
       } else if (timeFrame === "week") {
         const weekStart = new Date(today)
         weekStart.setDate(today.getDate() - today.getDay())
+        weekStart.setHours(4, 30, 0, 0)
         return logDate >= weekStart
       } else if (timeFrame === "month") {
-        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1, 4, 30, 0, 0)
         return logDate >= monthStart
       }
 
@@ -93,15 +114,19 @@ export default function InsightsView({
 
   // Calculate total study time by subject
   const getTotalTimeBySubject = () => {
+    // Initialize totals based on exam type
     const totals: Record<Subject, number> = {
-      physics: 0,
-      chemistry: 0,
-      mathematics: 0,
       classes: 0,
-    }
+      ...Object.keys(DEFAULT_EXAM_CONFIGS[settings.examType].subjectMarks).reduce((acc, subject) => ({
+        ...acc,
+        [subject]: 0
+      }), {})
+    } as Record<Subject, number>
 
     filteredLogs.forEach((log) => {
-      totals[log.subject] += log.duration
+      if (totals[log.subject] !== undefined) {
+        totals[log.subject] += log.duration
+      }
     })
 
     return totals
@@ -111,15 +136,19 @@ export default function InsightsView({
 
   // Calculate total questions by subject
   const getTotalQuestionsBySubject = () => {
+    // Initialize totals based on exam type
     const totals: Record<Subject, number> = {
-      physics: 0,
-      chemistry: 0,
-      mathematics: 0,
       classes: 0,
-    }
+      ...Object.keys(DEFAULT_EXAM_CONFIGS[settings.examType].subjectMarks).reduce((acc, subject) => ({
+        ...acc,
+        [subject]: 0
+      }), {})
+    } as Record<Subject, number>
 
     filteredLogs.forEach((log) => {
-      totals[log.subject] += log.questionCount || 0
+      if (totals[log.subject] !== undefined) {
+        totals[log.subject] += log.questionCount || 0
+      }
     })
 
     return totals
@@ -128,32 +157,52 @@ export default function InsightsView({
   const totalQuestionsBySubject = getTotalQuestionsBySubject()
 
   // Calculate total questions for goal tracking (excluding classes)
-  const totalQuestionsForGoal =
-    totalQuestionsBySubject.physics + totalQuestionsBySubject.chemistry + totalQuestionsBySubject.mathematics
+  const totalQuestionsForGoal = Object.entries(totalQuestionsBySubject)
+    .filter(([subject]) => subject !== "classes" && Object.keys(DEFAULT_EXAM_CONFIGS[settings.examType].subjectMarks).includes(subject))
+    .reduce((sum, [_, count]) => sum + count, 0)
 
   // Prepare data for pie chart
-  const pieChartData = Object.entries(totalTimeBySubject).map(([subject, duration]) => ({
-    name: subject.charAt(0).toUpperCase() + subject.slice(1),
-    value: Math.round(duration / 60), // Convert seconds to minutes
-  }))
+  const pieChartData = Object.entries(totalTimeBySubject)
+    .filter(([subject]) => totalTimeBySubject[subject as Subject] > 0)
+    .map(([subject, duration]) => ({
+      name: subject.charAt(0).toUpperCase() + subject.slice(1),
+      value: Math.round(duration / 60), // Convert seconds to minutes
+    }))
 
   // Prepare data for bar chart (daily distribution)
   const getBarChartData = () => {
     const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    const dayData = days.map((day) => ({
-      name: day,
-      physics: 0,
-      chemistry: 0,
-      mathematics: 0,
-      classes: 0,
-    }))
+    
+    type DayData = {
+      name: string;
+      classes: number;
+    } & Record<Subject, number>
+
+    const dayData = days.map((day) => {
+      const baseData = {
+        name: day,
+        classes: 0,
+      }
+      
+      // Add subject-specific data
+      const subjectData = Object.keys(DEFAULT_EXAM_CONFIGS[settings.examType].subjectMarks)
+        .reduce<Record<Subject, number>>((acc, subject) => {
+          acc[subject as Subject] = 0
+          return acc
+        }, {} as Record<Subject, number>)
+
+      return { ...baseData, ...subjectData } as DayData
+    })
 
     filteredLogs.forEach((log) => {
       const logDate = new Date(log.timestamp)
       const dayIndex = logDate.getDay()
       const minutes = Math.round(log.duration / 60)
 
-      dayData[dayIndex][log.subject] += minutes
+      const dayEntry = dayData[dayIndex]
+      if (dayEntry) {
+        dayEntry[log.subject] += minutes
+      }
     })
 
     // If we're only looking at today, just return today's data
@@ -169,17 +218,24 @@ export default function InsightsView({
 
   // Calculate task completion stats
   const getTaskStats = () => {
-    const stats = {
-      physics: { total: 0, completed: 0 },
-      chemistry: { total: 0, completed: 0 },
-      mathematics: { total: 0, completed: 0 },
+    type TaskStats = {
+      [K in Subject]?: { total: number; completed: number }
+    }
+
+    const stats: TaskStats = {
       classes: { total: 0, completed: 0 },
+      ...Object.keys(DEFAULT_EXAM_CONFIGS[settings.examType].subjectMarks).reduce((acc, subject) => ({
+        ...acc,
+        [subject]: { total: 0, completed: 0 }
+      }), {})
     }
 
     tasks.forEach((task) => {
-      stats[task.subject].total += 1
-      if (task.completed) {
-        stats[task.subject].completed += 1
+      if (stats[task.subject]) {
+        stats[task.subject]!.total += 1
+        if (task.completed) {
+          stats[task.subject]!.completed += 1
+        }
       }
     })
 
@@ -187,6 +243,114 @@ export default function InsightsView({
   }
 
   const taskStats = getTaskStats()
+
+  // Calculate test performance stats
+  const getTestStats = () => {
+    type TestStats = Record<string, {
+      totalTests: number;
+      avgScore: number;
+      avgAccuracy: number;
+      topicsTested?: string[];
+    }>
+
+    const stats = Object.keys(DEFAULT_EXAM_CONFIGS[settings.examType].subjectMarks)
+      .reduce<TestStats>((acc, subject) => ({
+        ...acc,
+        [subject]: { totalTests: 0, avgScore: 0, avgAccuracy: 0, topicsTested: [] }
+      }), {})
+
+    // Filter tests based on timeframe
+    const filteredTests = tests.filter(test => {
+      const testDate = new Date(test.date)
+      const now = new Date()
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+      if (timeFrame === "today") {
+        return testDate >= today
+      } else if (timeFrame === "week") {
+        const weekStart = new Date(today)
+        weekStart.setDate(today.getDate() - today.getDay())
+        return testDate >= weekStart
+      } else if (timeFrame === "month") {
+        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+        return testDate >= monthStart
+      }
+      return true
+    })
+
+    filteredTests.forEach((test) => {
+      if (test.subjectData) {
+        Object.entries(test.subjectData).forEach(([subject, data]) => {
+          if (stats[subject] && data.questionsAttempted > 0) {
+            stats[subject].totalTests++
+            stats[subject].avgScore = (stats[subject].avgScore * (stats[subject].totalTests - 1) + data.score) / stats[subject].totalTests
+            stats[subject].avgAccuracy = (stats[subject].avgAccuracy * (stats[subject].totalTests - 1) + (data.correctAnswers / data.questionsAttempted) * 100) / stats[subject].totalTests
+            
+            // Add topics if available
+            if (data.topicsTested) {
+              stats[subject].topicsTested = Array.from(new Set([
+                ...(stats[subject].topicsTested || []),
+                ...data.topicsTested
+              ]))
+            }
+          }
+        })
+      }
+    })
+
+    return stats
+  }
+
+  const testStats = getTestStats()
+
+  // Performance Trends
+  const getTestTrends = () => {
+    const trends: Record<string, Array<{ date: string; score: number; accuracy: number }>> = {}
+
+    // Filter and sort tests by date
+    const filteredTests = tests
+      .filter(test => {
+        const testDate = new Date(test.date)
+        const now = new Date()
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+        if (timeFrame === "today") {
+          return testDate >= today
+        } else if (timeFrame === "week") {
+          const weekStart = new Date(today)
+          weekStart.setDate(today.getDate() - today.getDay())
+          return testDate >= weekStart
+        } else if (timeFrame === "month") {
+          const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+          return testDate >= monthStart
+        }
+        return true
+      })
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+    // Process each test
+    filteredTests.forEach(test => {
+      if (test.subjectData) {
+        Object.entries(test.subjectData).forEach(([subject, data]) => {
+          if (!trends[subject]) {
+            trends[subject] = []
+          }
+
+          if (data.questionsAttempted > 0) {
+            trends[subject].push({
+              date: format(new Date(test.date), "MMM d"),
+              score: data.score,
+              accuracy: (data.correctAnswers / data.questionsAttempted) * 100
+            })
+          }
+        })
+      }
+    })
+
+    return trends
+  }
+
+  const testTrends = getTestTrends()
 
   // Format seconds as hours and minutes
   const formatTime = (seconds: number) => {
@@ -204,6 +368,49 @@ export default function InsightsView({
 
   // Calculate total questions
   const totalQuestions = Object.values(totalQuestionsBySubject).reduce((sum, count) => sum + count, 0)
+
+  // Group logs by day
+  const dailyStats = useMemo(() => {
+    const stats = new Map<string, { totalTime: number, questionsBySubject: Partial<Record<Subject, number>> }>()
+    
+    timeLogs.forEach(log => {
+      const date = new Date(log.startTime)
+      // Set time to 4:30 AM to match our day boundary
+      date.setHours(4, 30, 0, 0)
+      const dateKey = date.toISOString().split('T')[0]
+      
+      if (!stats.has(dateKey)) {
+        // Initialize with only the subjects for current exam type
+        const examConfig = DEFAULT_EXAM_CONFIGS[settings.examType]
+        const initialQuestions = {
+          classes: 0,
+          ...Object.keys(examConfig.subjectMarks).reduce((acc, subject) => ({
+            ...acc,
+            [subject]: 0
+          }), {})
+        }
+        
+        stats.set(dateKey, {
+          totalTime: 0,
+          questionsBySubject: initialQuestions
+        })
+      }
+      
+      const dayStats = stats.get(dateKey)!
+      dayStats.totalTime += log.duration
+      if (dayStats.questionsBySubject[log.subject] !== undefined) {
+        dayStats.questionsBySubject[log.subject]! += log.questionCount
+      }
+    })
+    
+    // Convert to array and sort by date (newest first)
+    return Array.from(stats.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, stats]) => ({
+        date,
+        ...stats
+      }))
+  }, [timeLogs, settings.examType])
 
   return (
     <Card className="w-full">
@@ -383,12 +590,158 @@ export default function InsightsView({
                             <Bar dataKey="physics" name="Physics" fill={SUBJECT_COLORS.physics} />
                             <Bar dataKey="chemistry" name="Chemistry" fill={SUBJECT_COLORS.chemistry} />
                             <Bar dataKey="mathematics" name="Mathematics" fill={SUBJECT_COLORS.mathematics} />
+                            <Bar dataKey="botany" name="Botany" fill={SUBJECT_COLORS.botany} />
+                            <Bar dataKey="zoology" name="Zoology" fill={SUBJECT_COLORS.zoology} />
                             <Bar dataKey="classes" name="Classes" fill={SUBJECT_COLORS.classes} />
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
                     </CardContent>
                   </Card>
+                </div>
+
+                {/* Test Performance Section */}
+                <div className="mt-8 space-y-8">
+                  <h3 className="text-lg font-semibold mb-4">Test Performance</h3>
+                  
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {Object.entries(testStats).map(([subject, stats]) => (
+                      <Card key={subject}>
+                        <CardContent className="pt-6">
+                          <h4 className="font-medium capitalize mb-4">{subject}</h4>
+                          <div className="space-y-2">
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Tests Taken</span>
+                              <span>{stats.totalTests}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Avg Score</span>
+                              <span>{stats.avgScore.toFixed(1)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Avg Accuracy</span>
+                              <span>{stats.avgAccuracy.toFixed(1)}%</span>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+
+                  {/* Performance Trends */}
+                  {Object.entries(testTrends).map(([subject, trends]) => {
+                    if (trends.length === 0) return null;
+
+                    // Get topic statistics
+                    const topicStats = trends.reduce((acc, trend) => {
+                      if (!acc[trend.date]) {
+                        acc[trend.date] = { count: 0, totalScore: 0 }
+                      }
+                      acc[trend.date].count++;
+                      acc[trend.date].totalScore += trend.score;
+                      return acc;
+                    }, {} as Record<string, { count: number; totalScore: number }>);
+
+                    return (
+                      <Card key={`trend-${subject}`} className="mt-4">
+                        <CardHeader>
+                          <CardTitle className="text-base capitalize">{subject} Performance Trend</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          {/* Performance Trend Chart */}
+                          <div className="h-[200px] mb-6">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={trends}>
+                                {isDarkMode && <rect width="100%" height="100%" fill="#1f2937" />}
+                                <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? "#374151" : "#e5e7eb"} />
+                                <XAxis 
+                                  dataKey="date" 
+                                  stroke={isDarkMode ? "#d1d5db" : "#374151"}
+                                />
+                                <YAxis 
+                                  stroke={isDarkMode ? "#d1d5db" : "#374151"}
+                                  domain={[0, 100]}
+                                />
+                                <Tooltip
+                                  contentStyle={
+                                    isDarkMode
+                                      ? { backgroundColor: "#1f2937", borderColor: "#374151", color: "#f9fafb" }
+                                      : undefined
+                                  }
+                                />
+                                <Legend />
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="score" 
+                                  stroke={SUBJECT_COLORS[subject as Subject]} 
+                                  name="Score"
+                                />
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="accuracy" 
+                                  stroke="#10b981" 
+                                  name="Accuracy %"
+                                />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+
+                          {/* Topic Analysis */}
+                          {Object.keys(topicStats).length > 0 && (
+                            <div>
+                              <h5 className="font-medium mb-3">Topic Analysis</h5>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                {Object.entries(topicStats).map(([topic, stats]) => (
+                                  <div key={topic} className="flex justify-between items-center p-2 bg-muted rounded">
+                                    <span className="font-medium">{topic}</span>
+                                    <div className="text-sm text-muted-foreground">
+                                      <div>Tests: {stats.count}</div>
+                                      <div>Avg Score: {(stats.totalScore / stats.count).toFixed(1)}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Performance Insights */}
+                          <div className="mt-4">
+                            <h5 className="font-medium mb-3">Performance Insights</h5>
+                            <div className="space-y-2 text-sm text-muted-foreground">
+                              {trends.length > 1 && (
+                                <>
+                                  {trends[trends.length - 1].score > trends[0].score ? (
+                                    <p className="text-green-600 dark:text-green-400">
+                                      ↗ Score improved by {(trends[trends.length - 1].score - trends[0].score).toFixed(1)} points
+                                    </p>
+                                  ) : trends[trends.length - 1].score < trends[0].score ? (
+                                    <p className="text-red-600 dark:text-red-400">
+                                      ↘ Score decreased by {(trends[0].score - trends[trends.length - 1].score).toFixed(1)} points
+                                    </p>
+                                  ) : (
+                                    <p>→ Score remained stable</p>
+                                  )}
+                                  
+                                  {trends[trends.length - 1].accuracy > trends[0].accuracy ? (
+                                    <p className="text-green-600 dark:text-green-400">
+                                      ↗ Accuracy improved by {(trends[trends.length - 1].accuracy - trends[0].accuracy).toFixed(1)}%
+                                    </p>
+                                  ) : trends[trends.length - 1].accuracy < trends[0].accuracy ? (
+                                    <p className="text-red-600 dark:text-red-400">
+                                      ↘ Accuracy decreased by {(trends[0].accuracy - trends[trends.length - 1].accuracy).toFixed(1)}%
+                                    </p>
+                                  ) : (
+                                    <p>→ Accuracy remained stable</p>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
                 </div>
               </>
             )}
@@ -407,13 +760,70 @@ export default function InsightsView({
           </TabsContent>
 
           <TabsContent value="weekly">
-            <WeeklyReport timeLogs={timeLogs} tasks={tasks} questionGoal={questionGoal} />
+            <WeeklyReport
+              timeLogs={timeLogs}
+              tasks={tasks}
+              tests={tests}
+              questionGoal={questionGoal}
+            />
           </TabsContent>
 
           <TabsContent value="daily">
-            <DailyReport timeLogs={timeLogs} tasks={tasks} questionGoal={questionGoal} />
+            <DailyReport
+              timeLogs={timeLogs}
+              tasks={tasks}
+              tests={tests}
+              questionGoal={questionGoal}
+            />
           </TabsContent>
         </Tabs>
+
+        {/* Daily Study History */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Daily Study History</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-[400px]">
+              <div className="space-y-4">
+                {dailyStats.map(day => (
+                  <Card key={day.date}>
+                    <CardContent className="py-4">
+                      <div className="flex justify-between items-center mb-4">
+                        <div>
+                          <h3 className="text-lg font-semibold">
+                            {format(new Date(day.date), "MMMM d, yyyy")}
+                          </h3>
+                          <p className="text-muted-foreground">
+                            Total Study Time: {formatTime(day.totalTime)}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-muted-foreground">
+                            Total Questions: {
+                              Object.values(day.questionsBySubject).reduce((a, b) => a + b, 0)
+                            }
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {Object.entries(day.questionsBySubject)
+                          .filter(([_, count]) => count > 0)
+                          .map(([subject, count]) => (
+                            <div key={subject} className="flex justify-between">
+                              <span className="capitalize">{subject}:</span>
+                              <span>{count} questions</span>
+                            </div>
+                          ))
+                        }
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
       </CardContent>
     </Card>
   )

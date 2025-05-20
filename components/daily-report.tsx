@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, ArrowRight, Download, FileText, BookOpen, Printer, AlertTriangle } from "lucide-react"
 import { format, startOfDay, endOfDay, addDays, subDays, isWithinInterval } from "date-fns"
-import type { Subject, Task, TimeLog, QuestionGoal } from "@/lib/types"
+import type { Subject, Task, TimeLog, QuestionGoal, TestRecord } from "@/lib/types"
 import { toast } from "@/components/ui/use-toast"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import {
@@ -20,18 +20,21 @@ import {
 interface DailyReportProps {
   timeLogs: TimeLog[]
   tasks: Task[]
+  tests: TestRecord[]
   questionGoal: QuestionGoal
 }
 
 // Colors for the different subjects
-const SUBJECT_COLORS = {
+const SUBJECT_COLORS: Record<Subject, string> = {
   physics: "#3b82f6", // blue
   chemistry: "#10b981", // green
   mathematics: "#f59e0b", // amber
+  botany: "#22c55e", // emerald
+  zoology: "#14b8a6", // teal
   classes: "#8b5cf6", // purple
 }
 
-export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyReportProps) {
+export default function DailyReport({ timeLogs, tasks, tests, questionGoal }: DailyReportProps) {
   const [currentDay, setCurrentDay] = useState(() => startOfDay(new Date()))
   const [isExporting, setIsExporting] = useState(false)
   const [showBrowserWarning, setShowBrowserWarning] = useState(false)
@@ -70,6 +73,14 @@ export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyRepo
     })
   }, [tasks, currentDay, currentDayEnd])
 
+  // Filter tests for current day
+  const currentDayTests = useMemo(() => {
+    return tests.filter((test) => {
+      const testDate = new Date(test.date)
+      return isWithinInterval(testDate, { start: currentDay, end: currentDayEnd })
+    })
+  }, [tests, currentDay, currentDayEnd])
+
   // Calculate total study time for current day
   const currentDayTotalTime = useMemo(() => {
     return currentDayLogs.reduce((total, log) => total + log.duration, 0)
@@ -82,12 +93,14 @@ export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyRepo
 
   // Calculate time by subject for current day
   const currentDayTimeBySubject = useMemo(() => {
-    const result: Record<Subject, number> = {
+    const result = {
       physics: 0,
       chemistry: 0,
       mathematics: 0,
+      botany: 0,
+      zoology: 0,
       classes: 0,
-    }
+    } as Record<Subject, number>
 
     currentDayLogs.forEach((log) => {
       result[log.subject] += log.duration
@@ -98,12 +111,14 @@ export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyRepo
 
   // Calculate questions by subject for current day
   const currentDayQuestionsBySubject = useMemo(() => {
-    const result: Record<Subject, number> = {
+    const result = {
       physics: 0,
       chemistry: 0,
       mathematics: 0,
+      botany: 0,
+      zoology: 0,
       classes: 0,
-    }
+    } as Record<Subject, number>
 
     currentDayLogs.forEach((log) => {
       result[log.subject] += log.questionCount || 0
@@ -127,6 +142,25 @@ export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyRepo
     const completedTasks = currentDayTasks.filter((task) => task.completed).length
     return Math.round((completedTasks / currentDayTasks.length) * 100)
   }, [currentDayTasks])
+
+  // Calculate test stats for current day
+  const currentDayTestStats = useMemo(() => {
+    return currentDayTests.reduce((acc, test) => {
+      Object.entries(test.subjectData).forEach(([subject, data]) => {
+        if (!acc[subject as Subject]) {
+          acc[subject as Subject] = {
+            totalTests: 0,
+            totalScore: 0,
+            totalAccuracy: 0,
+          }
+        }
+        acc[subject as Subject].totalTests++
+        acc[subject as Subject].totalScore += data.score
+        acc[subject as Subject].totalAccuracy += (data.correctAnswers / data.questionsAttempted) * 100
+      })
+      return acc
+    }, {} as Record<Subject, { totalTests: number; totalScore: number; totalAccuracy: number }>)
+  }, [currentDayTests])
 
   // Format time as hours and minutes
   const formatTime = (seconds: number) => {
@@ -239,99 +273,109 @@ export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyRepo
 
       setIsExporting(true)
 
-      // Dynamically import jsPDF and jspdf-autotable
-      const jsPDFModule = await import("jspdf")
-      const jsPDF = jsPDFModule.default
-      await import("jspdf-autotable")
+      try {
+        // Use require instead of dynamic import for better V0 compatibility
+        const jsPDF = require('jspdf').default;
+        require('jspdf-autotable');
+        
+        const doc = new jsPDF();
 
-      const doc = new jsPDF()
+        // Add title
+        doc.setFontSize(18)
+        doc.text(`Daily Study Report: ${format(currentDay, "MMMM d, yyyy")}`, 105, 15, { align: "center" })
 
-      // Add title
-      doc.setFontSize(18)
-      doc.text(`Daily Study Report: ${format(currentDay, "MMMM d, yyyy")}`, 105, 15, { align: "center" })
+        // Add summary section
+        doc.setFontSize(14)
+        doc.text("Study Summary", 14, 30)
 
-      // Add summary section
-      doc.setFontSize(14)
-      doc.text("Study Summary", 14, 30)
-
-      doc.setFontSize(12)
-      doc.text(`Total Study Time: ${formatTime(currentDayTotalTime)}`, 14, 40)
-      doc.text(`Total Questions Solved: ${totalQuestionsForGoal}/${questionGoal.daily}`, 14, 48)
-      doc.text(
-        `Tasks Completed: ${currentDayTasks.filter((t) => t.completed).length}/${currentDayTasks.length}`,
-        14,
-        56,
-      )
-
-      // Add subject breakdown table
-      doc.setFontSize(14)
-      doc.text("Subject Breakdown", 14, 70)
-
-      const subjectData = Object.entries(currentDayTimeBySubject)
-        .filter(([_, time]) => time > 0)
-        .map(([subject, time]) => [
-          subject.charAt(0).toUpperCase() + subject.slice(1),
-          formatTime(time),
-          subject === "classes" ? "N/A" : currentDayQuestionsBySubject[subject as Subject].toString(),
-        ])
-
-      // @ts-ignore - jspdf-autotable types
-      doc.autoTable({
-        startY: 75,
-        head: [["Subject", "Study Time", "Questions Solved"]],
-        body: subjectData,
-        theme: "striped",
-        headStyles: { fillColor: [51, 51, 51] },
-      })
-
-      // Add study sessions with notes
-      const tableEndY = (doc as any).lastAutoTable.finalY + 10
-
-      doc.setFontSize(14)
-      doc.text("Study Sessions", 14, tableEndY)
-
-      // @ts-ignore - jspdf-autotable types
-      doc.autoTable({
-        startY: tableEndY + 5,
-        head: [["Subject", "Time", "Duration", "Questions", "Goal", "Notes"]],
-        body: currentDayLogs.map((log) => [
-          log.subject.charAt(0).toUpperCase() + log.subject.slice(1),
-          `${format(new Date(log.startTime), "h:mm a")} - ${format(new Date(log.endTime), "h:mm a")}`,
-          formatTime(log.duration),
-          log.subject === "classes" ? "N/A" : log.questionCount,
-          log.goalTitle || "No specific goal",
-          log.notes || "",
-        ]),
-        theme: "striped",
-        headStyles: { fillColor: [51, 51, 51] },
-        columnStyles: {
-          5: { cellWidth: "auto" },
-        },
-        styles: {
-          overflow: "linebreak",
-          cellPadding: 3,
-        },
-      })
-
-      // Add footer
-      const pageCount = doc.internal.getNumberOfPages()
-      doc.setFontSize(10)
-      for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i)
+        doc.setFontSize(12)
+        doc.text(`Total Study Time: ${formatTime(currentDayTotalTime)}`, 14, 40)
+        doc.text(`Total Questions Solved: ${totalQuestionsForGoal}/${questionGoal.daily}`, 14, 48)
         doc.text(
-          `Generated on ${format(new Date(), "MMMM d, yyyy")} | Study Tracker App`,
-          105,
-          doc.internal.pageSize.height - 10,
-          { align: "center" },
+          `Tasks Completed: ${currentDayTasks.filter((t) => t.completed).length}/${currentDayTasks.length}`,
+          14,
+          56,
         )
-      }
 
-      // Save the PDF
-      doc.save(`study-report-${format(currentDay, "yyyy-MM-dd")}.pdf`)
-      toast({
-        title: "Report Downloaded",
-        description: "Your study report has been downloaded as a PDF.",
-      })
+        // Add subject breakdown table
+        doc.setFontSize(14)
+        doc.text("Subject Breakdown", 14, 70)
+
+        const subjectData = Object.entries(currentDayTimeBySubject)
+          .filter(([_, time]) => time > 0)
+          .map(([subject, time]) => [
+            subject.charAt(0).toUpperCase() + subject.slice(1),
+            formatTime(time),
+            subject === "classes" ? "N/A" : currentDayQuestionsBySubject[subject as Subject].toString(),
+          ])
+
+        // @ts-ignore - jspdf-autotable types
+        doc.autoTable({
+          startY: 75,
+          head: [["Subject", "Study Time", "Questions Solved"]],
+          body: subjectData,
+          theme: "striped",
+          headStyles: { fillColor: [51, 51, 51] },
+        })
+
+        // Add study sessions with notes
+        const tableEndY = (doc as any).lastAutoTable.finalY + 10
+
+        doc.setFontSize(14)
+        doc.text("Study Sessions", 14, tableEndY)
+
+        // @ts-ignore - jspdf-autotable types
+        doc.autoTable({
+          startY: tableEndY + 5,
+          head: [["Subject", "Time", "Duration", "Questions", "Goal", "Notes"]],
+          body: currentDayLogs.map((log) => [
+            log.subject.charAt(0).toUpperCase() + log.subject.slice(1),
+            `${format(new Date(log.startTime), "h:mm a")} - ${format(new Date(log.endTime), "h:mm a")}`,
+            formatTime(log.duration),
+            log.subject === "classes" ? "N/A" : log.questionCount,
+            log.goalTitle || "No specific goal",
+            log.notes || "",
+          ]),
+          theme: "striped",
+          headStyles: { fillColor: [51, 51, 51] },
+          columnStyles: {
+            5: { cellWidth: "auto" },
+          },
+          styles: {
+            overflow: "linebreak",
+            cellPadding: 3,
+          },
+        })
+
+        // Add footer
+        const pageCount = (doc as any).internal.getNumberOfPages()
+        doc.setFontSize(10)
+        for (let i = 1; i <= pageCount; i++) {
+          doc.setPage(i)
+          doc.text(
+            `Generated on ${format(new Date(), "MMMM d, yyyy")} | Study Tracker App`,
+            105,
+            (doc as any).internal.pageSize.height - 10,
+            { align: "center" },
+          )
+        }
+
+        // Save the PDF
+        doc.save(`study-report-${format(currentDay, "yyyy-MM-dd")}.pdf`)
+        toast({
+          title: "Report Downloaded",
+          description: "Your study report has been downloaded as a PDF.",
+        })
+      } catch (importError) {
+        console.error("Error loading PDF libraries:", importError);
+        toast({
+          title: "PDF Generation Failed",
+          description: "Could not load PDF generation libraries. Please try the CSV export option instead.",
+          variant: "destructive",
+        });
+        exportReportAsCSV();
+        return;
+      }
     } catch (error) {
       console.error("Error generating PDF:", error)
       toast({
@@ -601,6 +645,36 @@ export default function DailyReport({ timeLogs, tasks, questionGoal }: DailyRepo
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {/* Test Performance Section */}
+          {Object.keys(currentDayTestStats).length > 0 && (
+            <div className="mt-8">
+              <h3 className="text-lg font-semibold mb-4">Today's Test Performance</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {Object.entries(currentDayTestStats).map(([subject, stats]) => (
+                  <Card key={subject}>
+                    <CardContent className="pt-6">
+                      <h4 className="font-medium capitalize mb-4">{subject}</h4>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Tests Taken</span>
+                          <span>{stats.totalTests}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Avg Score</span>
+                          <span>{(stats.totalScore / stats.totalTests).toFixed(1)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Avg Accuracy</span>
+                          <span>{(stats.totalAccuracy / stats.totalTests).toFixed(1)}%</span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
           )}
         </>
       )}

@@ -5,20 +5,28 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import StudyTimer from "@/components/study-timer"
 import TaskManager from "@/components/task-manager"
 import InsightsView from "@/components/insights-view"
-import type { Subject, Task, TimeLog, QuestionGoal } from "@/lib/types"
+import type { Subject, Task, TimeLog, QuestionGoal, TestRecord, UserSettings, StreakData } from "@/lib/types"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Card, CardContent } from "@/components/ui/card"
-import { Clock, BookOpen } from "lucide-react"
+import { Clock, BookOpen, Flame, LogOut } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import TestTracker from "@/components/test-tracker"
+import WeeklyReport from "@/components/weekly-report"
+import DailyReport from "@/components/daily-report"
+import StudyLogs from "@/components/study-logs"
+import SettingsDialog from "@/components/settings-dialog"
+import { DEFAULT_EXAM_CONFIGS, DEFAULT_STREAK_CONFIG } from "@/lib/types"
+import { signOut } from "next-auth/react"
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<string>("timer")
   const [tasks, setTasks] = useState<Task[]>([])
   const [timeLogs, setTimeLogs] = useState<TimeLog[]>([])
   const [questionGoal, setQuestionGoal] = useState<QuestionGoal>({ daily: 80 })
+  const [tests, setTests] = useState<TestRecord[]>([])
 
   // Timer state moved to Dashboard component
   const [activeSubject, setActiveSubject] = useState<Subject>("physics")
@@ -37,65 +45,233 @@ export default function Dashboard() {
   const [showNotesDialog, setShowNotesDialog] = useState<boolean>(false)
   const pendingLogRef = useRef<Omit<TimeLog, "notes"> | null>(null)
 
-  // Load data from localStorage on component mount
-  useEffect(() => {
-    const savedTasks = localStorage.getItem("study-tasks")
-    const savedTimeLogs = localStorage.getItem("study-time-logs")
-    const savedQuestionGoal = localStorage.getItem("study-question-goal")
+  // Add settings state
+  const [settings, setSettings] = useState<UserSettings>({
+    examType: "JEE",
+    customSubjectNames: {},
+    streakConfig: DEFAULT_STREAK_CONFIG,
+  })
 
-    if (savedTasks) {
-      setTasks(JSON.parse(savedTasks))
+  // Add state for today's total time
+  const [todayTotalTime, setTodayTotalTime] = useState(0)
+
+  // Add streak state
+  const [streakData, setStreakData] = useState<StreakData>({
+    currentStreak: 0,
+    longestStreak: 0,
+    lastStreakDate: new Date().toISOString(),
+    streakHistory: []
+  })
+
+  // Load settings from localStorage on component mount
+  useEffect(() => {
+    const savedSettings = localStorage.getItem("study-settings")
+    if (savedSettings) {
+      setSettings(JSON.parse(savedSettings))
     }
 
+    // Calculate today's total time from today's logs
+    const now = new Date()
+    const today = new Date()
+    
+    // Reset today to start of current day at 4:30 AM
+    today.setHours(4, 30, 0, 0)
+    today.setSeconds(0)
+    today.setMilliseconds(0)
+    
+    // If current time is before 4:30 AM, look at previous day
+    if (now.getHours() < 4 || (now.getHours() === 4 && now.getMinutes() < 30)) {
+      today.setDate(today.getDate() - 1)
+    }
+
+    // Calculate total time from today's logs
+    const savedTimeLogs = localStorage.getItem("study-time-logs")
     if (savedTimeLogs) {
       try {
         const parsedLogs = JSON.parse(savedTimeLogs)
-        // Migrate old logs to new format if needed
-        const migratedLogs = parsedLogs.map((log: any) => {
-          if (!log.startTime || !log.endTime) {
-            // For old logs, estimate start and end times based on timestamp and duration
-            const endTime = new Date(log.timestamp).toISOString()
-            const startDate = new Date(log.timestamp)
-            startDate.setSeconds(startDate.getSeconds() - log.duration)
-            const startTime = startDate.toISOString()
-
-            return {
-              ...log,
-              startTime,
-              endTime,
-              questionCount: log.questionCount || 0,
-            }
-          }
-          return {
-            ...log,
-            questionCount: log.questionCount || 0,
-          }
+        const todayLogs = parsedLogs.filter((log: TimeLog) => {
+          const logDate = new Date(log.startTime)
+          const localLogDate = new Date(logDate.getTime() - (logDate.getTimezoneOffset() * 60000))
+          const localToday = new Date(today.getTime() - (today.getTimezoneOffset() * 60000))
+          return localLogDate.getTime() >= localToday.getTime()
         })
-        setTimeLogs(migratedLogs)
+        const totalTime = todayLogs.reduce((total: number, log: TimeLog) => total + log.duration, 0)
+        setTodayTotalTime(totalTime)
+        localStorage.setItem("today-total-time", totalTime.toString())
       } catch (error) {
-        console.error("Error parsing time logs:", error)
-        setTimeLogs([])
+        console.error("Error calculating today's total time:", error)
+        setTodayTotalTime(0)
+        localStorage.setItem("today-total-time", "0")
       }
     }
 
-    if (savedQuestionGoal) {
-      try {
-        setQuestionGoal(JSON.parse(savedQuestionGoal))
-      } catch (error) {
-        console.error("Error parsing question goal:", error)
-      }
-    }
+    localStorage.setItem("last-reset-time", now.toISOString())
   }, [])
 
-  // Timer management
+  // Update today's total time whenever time logs change
   useEffect(() => {
-    // Clean up interval on unmount
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
+    const now = new Date()
+    const today = new Date()
+    
+    // Reset today to start of current day at 4:30 AM
+    today.setHours(4, 30, 0, 0)
+    today.setSeconds(0)
+    today.setMilliseconds(0)
+    
+    // If current time is before 4:30 AM, look at previous day
+    if (now.getHours() < 4 || (now.getHours() === 4 && now.getMinutes() < 30)) {
+      today.setDate(today.getDate() - 1)
+    }
+
+    // Calculate total time from today's logs
+    const todayLogs = timeLogs.filter((log) => {
+      const logDate = new Date(log.startTime)
+      const localLogDate = new Date(logDate.getTime() - (logDate.getTimezoneOffset() * 60000))
+      const localToday = new Date(today.getTime() - (today.getTimezoneOffset() * 60000))
+      return localLogDate.getTime() >= localToday.getTime()
+    })
+
+    const totalTime = todayLogs.reduce((total, log) => total + log.duration, 0)
+    setTodayTotalTime(totalTime)
+    localStorage.setItem("today-total-time", totalTime.toString())
+  }, [timeLogs])
+
+  // Load timer state from localStorage on component mount
+  useEffect(() => {
+    const savedTimerState = localStorage.getItem("study-timer-state")
+    if (savedTimerState) {
+      const { isRunning: wasRunning, startTime, subject, questionCount: savedQuestionCount } = JSON.parse(savedTimerState)
+      
+      if (wasRunning && startTime) {
+        // Calculate elapsed time
+        const startTimeMs = new Date(startTime).getTime()
+        const currentTime = new Date().getTime()
+        const elapsedSeconds = Math.floor((currentTime - startTimeMs) / 1000)
+        
+        // Resume timer with full elapsed time
+        setIsRunning(true)
+        setTime(elapsedSeconds)
+        setActiveSubject(subject)
+        setQuestionCount(savedQuestionCount)
+        startTimeRef.current = startTime
       }
     }
   }, [])
+
+  // Save timer state to localStorage whenever it changes
+  useEffect(() => {
+    if (isRunning) {
+      localStorage.setItem("study-timer-state", JSON.stringify({
+        isRunning,
+        startTime: startTimeRef.current,
+        subject: activeSubject,
+        questionCount
+      }))
+    } else {
+      localStorage.removeItem("study-timer-state")
+    }
+  }, [isRunning, activeSubject, questionCount])
+
+  // Load data from localStorage on component mount
+  useEffect(() => {
+    const now = new Date()
+    const today = new Date()
+    
+    // Reset today to start of current day at 4:30 AM
+    today.setHours(4, 30, 0, 0)
+    today.setSeconds(0)
+    today.setMilliseconds(0)
+    
+    // If current time is before 4:30 AM, look at previous day
+    if (now.getHours() < 4 || (now.getHours() === 4 && now.getMinutes() < 30)) {
+      today.setDate(today.getDate() - 1)
+    }
+
+    // Load data from localStorage
+    const loadData = () => {
+      const savedTimeLogs = localStorage.getItem("study-time-logs")
+      const savedTasks = localStorage.getItem("study-tasks")
+      const savedQuestionGoal = localStorage.getItem("study-question-goal")
+      const savedTests = localStorage.getItem("study-tests")
+      const savedSettings = localStorage.getItem("study-settings")
+
+      if (savedTimeLogs) {
+        try {
+          const parsedLogs = JSON.parse(savedTimeLogs)
+          setTimeLogs(parsedLogs)
+        } catch (error) {
+          console.error("Error parsing time logs:", error)
+          setTimeLogs([])
+        }
+      }
+
+      if (savedTasks) {
+        try {
+          const parsedTasks = JSON.parse(savedTasks)
+          // Only keep tasks from today
+          const todayTasks = parsedTasks.filter((task: Task) => {
+            const taskDate = new Date(task.createdAt)
+            const localTaskDate = new Date(taskDate.getTime() - (taskDate.getTimezoneOffset() * 60000))
+            const localToday = new Date(today.getTime() - (today.getTimezoneOffset() * 60000))
+            return localTaskDate.getTime() >= localToday.getTime()
+          })
+          localStorage.setItem("study-tasks", JSON.stringify(todayTasks))
+          setTasks(todayTasks)
+        } catch (error) {
+          console.error("Error parsing tasks:", error)
+          setTasks([])
+        }
+      }
+
+      if (savedSettings) {
+        setSettings(JSON.parse(savedSettings))
+      }
+
+      if (savedQuestionGoal) {
+        try {
+          setQuestionGoal(JSON.parse(savedQuestionGoal))
+        } catch (error) {
+          console.error("Error parsing question goal:", error)
+        }
+      }
+
+      if (savedTests) {
+        try {
+          setTests(JSON.parse(savedTests))
+        } catch (error) {
+          console.error("Error parsing tests:", error)
+          setTests([])
+        }
+      }
+    }
+
+    // Load data
+    loadData()
+  }, [])
+
+  // Add effect to update time based on start time
+  useEffect(() => {
+    if (isRunning && startTimeRef.current) {
+      const updateTimer = () => {
+        const startTime = new Date(startTimeRef.current).getTime()
+        const currentTime = new Date().getTime()
+        const elapsedSeconds = Math.floor((currentTime - startTime) / 1000)
+        setTime(elapsedSeconds)
+      }
+
+      // Update immediately
+      updateTimer()
+
+      // Then update every second
+      intervalRef.current = setInterval(updateTimer, 1000)
+
+      return () => {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current)
+        }
+      }
+    }
+  }, [isRunning])
 
   // Save data to localStorage whenever it changes
   useEffect(() => {
@@ -110,50 +286,103 @@ export default function Dashboard() {
     localStorage.setItem("study-question-goal", JSON.stringify(questionGoal))
   }, [questionGoal])
 
+  useEffect(() => {
+    localStorage.setItem("study-tests", JSON.stringify(tests))
+  }, [tests])
+
+  // Save settings to localStorage
+  useEffect(() => {
+    localStorage.setItem("study-settings", JSON.stringify(settings))
+  }, [settings])
+
   // Calculate today's stats
   const todayStats = useMemo(() => {
+    const now = new Date()
     const today = new Date()
-    today.setHours(0, 0, 0, 0)
+    
+    // Reset today to start of current day at 4:30 AM in local timezone
+    today.setHours(4, 30, 0, 0)
+    today.setSeconds(0)
+    today.setMilliseconds(0)
+    
+    // If current time is before 4:30 AM, we should look at logs since 4:30 AM of the previous day
+    if (now.getHours() < 4 || (now.getHours() === 4 && now.getMinutes() < 30)) {
+      today.setDate(today.getDate() - 1)
+    }
 
+    console.log('Today cutoff:', today.toISOString())
+    
     const todayLogs = timeLogs.filter((log) => {
+      // Convert log time to local timezone for comparison
       const logDate = new Date(log.startTime)
-      return logDate >= today
+      const localLogDate = new Date(logDate.getTime() - (logDate.getTimezoneOffset() * 60000))
+      const localToday = new Date(today.getTime() - (today.getTimezoneOffset() * 60000))
+      
+      console.log('Checking log:', {
+        startTime: log.startTime,
+        logDate: logDate.toISOString(),
+        localLogDate: localLogDate.toISOString(),
+        isToday: localLogDate.getTime() >= localToday.getTime(),
+        duration: log.duration
+      })
+      
+      return localLogDate.getTime() >= localToday.getTime()
     })
 
-    // Calculate total study time by subject
-    const timeBySubject: Record<Subject, number> = {
-      physics: 0,
-      chemistry: 0,
-      mathematics: 0,
-      classes: 0,
-    }
+    console.log('Today logs:', todayLogs)
 
-    // Calculate questions by subject
-    const questionsBySubject: Record<Subject, number> = {
-      physics: 0,
-      chemistry: 0,
-      mathematics: 0,
+    // Get the current exam config
+    const examConfig = DEFAULT_EXAM_CONFIGS[settings.examType]
+
+    // Initialize time and questions only for relevant subjects
+    const timeBySubject: Record<Subject, number> = {
       classes: 0,
-    }
+      ...Object.keys(examConfig.subjectMarks).reduce((acc, subject) => ({
+        ...acc,
+        [subject]: 0
+      }), {})
+    } as Record<Subject, number>
+
+    // Initialize questions only for relevant subjects
+    const questionsBySubject: Record<Subject, number> = {
+      classes: 0,
+      ...Object.keys(examConfig.subjectMarks).reduce((acc, subject) => ({
+        ...acc,
+        [subject]: 0
+      }), {})
+    } as Record<Subject, number>
 
     todayLogs.forEach((log) => {
-      timeBySubject[log.subject] += log.duration
-      questionsBySubject[log.subject] += log.questionCount
+      // Only count stats for relevant subjects
+      if (log.subject === "classes" || Object.keys(examConfig.subjectMarks).includes(log.subject)) {
+        timeBySubject[log.subject] += log.duration
+        questionsBySubject[log.subject] += log.questionCount
+      }
     })
 
     // Calculate total questions for goal tracking (excluding classes)
-    const totalQuestionsForGoal =
-      questionsBySubject.physics + questionsBySubject.chemistry + questionsBySubject.mathematics
+    const totalQuestionsForGoal = Object.entries(questionsBySubject)
+      .filter(([subject]) => subject !== "classes" && Object.keys(examConfig.subjectMarks).includes(subject))
+      .reduce((sum, [_, count]) => sum + count, 0)
 
     return {
       timeBySubject,
       questionsBySubject,
       totalQuestionsForGoal,
+      examConfig, // Return examConfig so we can use it in the render
     }
-  }, [timeLogs])
+  }, [timeLogs, settings.examType])
 
-  const addTask = (task: Task) => {
-    setTasks([...tasks, task])
+  // Use examConfig from todayStats
+  const examConfig = todayStats.examConfig
+
+  const addTask = (task: Omit<Task, 'id' | 'createdAt'>) => {
+    const newTask: Task = {
+      ...task,
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString()
+    }
+    setTasks([...tasks, newTask])
   }
 
   const toggleTaskCompletion = (taskId: string) => {
@@ -164,30 +393,40 @@ export default function Dashboard() {
     setTasks(tasks.filter((task) => task.id !== taskId))
   }
 
-  // Update the startTimer function to include the goal
+  // Update the startTimer function
   const startTimer = (goalId?: string, goalTitle?: string) => {
     if (!isRunning) {
       const now = new Date().toISOString()
       startTimeRef.current = now
-      // Store the selected goal
       goalIdRef.current = goalId
       goalTitleRef.current = goalTitle
       setIsRunning(true)
-      intervalRef.current = setInterval(() => {
-        setTime((prevTime) => prevTime + 1)
-      }, 1000)
     }
   }
 
-  // Update the pauseTimer function to prompt for notes if a goal was selected
+  // Update the pauseTimer function
   const pauseTimer = () => {
-    if (isRunning && intervalRef.current) {
-      clearInterval(intervalRef.current)
+    if (isRunning) {
       setIsRunning(false)
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
 
-      // Log the study time when pausing
-      if (time > 0) {
-        const endTime = new Date().toISOString()
+      // Remove timer state from localStorage
+      localStorage.removeItem("study-timer-state")
+
+      // Calculate final duration based on timestamps
+      const startTime = new Date(startTimeRef.current).getTime()
+      const endTime = new Date().getTime()
+      const finalDuration = Math.floor((endTime - startTime) / 1000)
+
+      if (finalDuration > 0) {
+        const endTimeISO = new Date().toISOString()
+
+        // Update today's total time
+        const newTotalTime = todayTotalTime + finalDuration
+        setTodayTotalTime(newTotalTime)
+        localStorage.setItem("today-total-time", newTotalTime.toString())
 
         // If a goal was selected, prompt for notes
         if (goalIdRef.current) {
@@ -195,10 +434,10 @@ export default function Dashboard() {
           pendingLogRef.current = {
             id: Date.now().toString(),
             subject: activeSubject,
-            duration: time,
-            timestamp: endTime,
+            duration: finalDuration,
+            timestamp: endTimeISO,
             startTime: startTimeRef.current,
-            endTime,
+            endTime: endTimeISO,
             questionCount,
             goalId: goalIdRef.current,
             goalTitle: goalTitleRef.current,
@@ -211,18 +450,17 @@ export default function Dashboard() {
           // No goal selected, log directly
           logStudyTime(
             activeSubject,
-            time,
+            finalDuration,
             startTimeRef.current,
-            endTime,
+            endTimeISO,
             questionCount,
             goalIdRef.current,
             goalTitleRef.current,
           )
         }
 
-        setTime(0) // Reset the timer after logging
-        setQuestionCount(0) // Reset question count after logging
-        // Reset goal refs
+        setTime(0)
+        setQuestionCount(0)
         goalIdRef.current = undefined
         goalTitleRef.current = undefined
       }
@@ -266,11 +504,15 @@ export default function Dashboard() {
     }
   }
 
-  // Update the changeSubject function to include the goal in the log
+  // Update the changeSubject function
   const changeSubject = (subject: Subject) => {
     if (time > 0 && isRunning) {
-      // Log the current subject's time before switching
-      const endTime = new Date().toISOString()
+      // Calculate final duration based on timestamps
+      const startTime = new Date(startTimeRef.current).getTime()
+      const endTime = new Date().getTime()
+      const finalDuration = Math.floor((endTime - startTime) / 1000)
+
+      const endTimeISO = new Date().toISOString()
 
       // If a goal was selected, prompt for notes
       if (goalIdRef.current) {
@@ -278,10 +520,10 @@ export default function Dashboard() {
         pendingLogRef.current = {
           id: Date.now().toString(),
           subject: activeSubject,
-          duration: time,
-          timestamp: endTime,
+          duration: finalDuration,
+          timestamp: endTimeISO,
           startTime: startTimeRef.current,
-          endTime,
+          endTime: endTimeISO,
           questionCount,
           goalId: goalIdRef.current,
           goalTitle: goalTitleRef.current,
@@ -291,14 +533,13 @@ export default function Dashboard() {
         setSessionNotes("")
         setShowNotesDialog(true)
 
-        // Reset timer when changing subjects
+        // Reset timer
         if (intervalRef.current) {
           clearInterval(intervalRef.current)
         }
         setIsRunning(false)
         setTime(0)
-        setQuestionCount(0) // Reset question count when changing subjects
-        // Reset goal refs
+        setQuestionCount(0)
         goalIdRef.current = undefined
         goalTitleRef.current = undefined
 
@@ -306,26 +547,27 @@ export default function Dashboard() {
         setActiveSubject(subject)
       } else {
         // No goal selected, log directly
-        logStudyTime(activeSubject, time, startTimeRef.current, endTime, questionCount)
+        logStudyTime(
+          activeSubject,
+          finalDuration,
+          startTimeRef.current,
+          endTimeISO,
+          questionCount
+        )
 
-        // Reset timer when changing subjects
+        // Reset timer and start new session
         if (intervalRef.current) {
           clearInterval(intervalRef.current)
         }
         setIsRunning(false)
         setTime(0)
-        setQuestionCount(0) // Reset question count when changing subjects
+        setQuestionCount(0)
 
-        // Set new subject
+        // Set new subject and start new timer
         setActiveSubject(subject)
-
-        // Restart timer with new subject
         const now = new Date().toISOString()
         startTimeRef.current = now
         setIsRunning(true)
-        intervalRef.current = setInterval(() => {
-          setTime((prevTime) => prevTime + 1)
-        }, 1000)
       }
     } else {
       setActiveSubject(subject)
@@ -470,8 +712,175 @@ export default function Dashboard() {
     physics: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
     chemistry: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
     mathematics: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300",
+    botany: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300",
+    zoology: "bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-300",
     classes: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
   }
+
+  // Test management functions
+  const addTest = (test: Omit<TestRecord, "id">) => {
+    const newTest: TestRecord = {
+      ...test,
+      id: Date.now().toString(),
+    }
+    setTests([...tests, newTest])
+  }
+
+  const deleteTest = (id: string) => {
+    setTests(tests.filter((test) => test.id !== id))
+  }
+
+  const editTest = (id: string, updatedTest: Omit<TestRecord, "id">) => {
+    setTests(tests.map((test) => test.id === id ? { ...updatedTest, id } : test))
+  }
+
+  // Function to get display name for a subject
+  const getSubjectDisplayName = (subject: string) => {
+    return settings.customSubjectNames[subject] || subject
+  }
+
+  // Update settings
+  const handleUpdateSettings = (newSettings: UserSettings) => {
+    setSettings(newSettings)
+    
+    // If exam type changed, we need to reset some data
+    if (newSettings.examType !== settings.examType) {
+      // Reset active subject to first valid subject for new exam type
+      const validSubjects = Object.keys(DEFAULT_EXAM_CONFIGS[newSettings.examType].subjectMarks)
+      setActiveSubject(validSubjects[0] as Subject)
+
+      // Reset time logs for invalid subjects
+      setTimeLogs(prevLogs => prevLogs.filter(log => 
+        log.subject === "classes" || 
+        Object.keys(DEFAULT_EXAM_CONFIGS[newSettings.examType].subjectMarks).includes(log.subject)
+      ))
+
+      // Reset tasks for invalid subjects
+      setTasks(prevTasks => prevTasks.filter(task => 
+        task.subject === "classes" || 
+        Object.keys(DEFAULT_EXAM_CONFIGS[newSettings.examType].subjectMarks).includes(task.subject)
+      ))
+
+      // Clear tests as they have different marking schemes
+      setTests([])
+    }
+  }
+
+  // Filter tasks for today
+  const todayTasks = useMemo(() => {
+    const now = new Date()
+    const today = new Date()
+    
+    // Reset today to start of current day at 4:30 AM in local timezone
+    today.setHours(4, 30, 0, 0)
+    today.setSeconds(0)
+    today.setMilliseconds(0)
+    
+    // If current time is before 4:30 AM, we should look at tasks since 4:30 AM of the previous day
+    if (now.getHours() < 4 || (now.getHours() === 4 && now.getMinutes() < 30)) {
+      today.setDate(today.getDate() - 1)
+    }
+
+    return tasks.filter(task => {
+      const taskDate = new Date(task.createdAt)
+      const localTaskDate = new Date(taskDate.getTime() - (taskDate.getTimezoneOffset() * 60000))
+      const localToday = new Date(today.getTime() - (today.getTimezoneOffset() * 60000))
+      return localTaskDate.getTime() >= localToday.getTime()
+    })
+  }, [tasks])
+
+  // Function to check if streak requirements are met for a given date
+  const checkStreakRequirements = (date: Date) => {
+    const startOfDay = new Date(date)
+    startOfDay.setHours(4, 30, 0, 0) // Set to 4:30 AM
+    
+    const endOfDay = new Date(date)
+    endOfDay.setDate(endOfDay.getDate() + 1)
+    endOfDay.setHours(4, 29, 59, 999) // Set to 4:29:59.999 AM next day
+
+    // Filter logs for the given day
+    const dayLogs = timeLogs.filter(log => {
+      const logDate = new Date(log.startTime)
+      return logDate >= startOfDay && logDate <= endOfDay
+    })
+
+    // Calculate total study hours
+    const totalHours = dayLogs.reduce((total, log) => total + log.duration / 3600, 0)
+
+    // Calculate total questions
+    const totalQuestions = dayLogs.reduce((total, log) => total + log.questionCount, 0)
+
+    // Check if requirements are met
+    return totalHours >= settings.streakConfig.minStudyHours &&
+           totalQuestions >= settings.streakConfig.minQuestions
+  }
+
+  // Function to update streak data
+  const updateStreak = () => {
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+
+    const lastStreakDate = new Date(streakData.lastStreakDate)
+    const todayMet = checkStreakRequirements(today)
+    const yesterdayMet = checkStreakRequirements(yesterday)
+
+    let newStreak = streakData.currentStreak
+    let newHistory = [...streakData.streakHistory]
+
+    // Update today's status
+    const todayStr = today.toISOString()
+    const existingTodayIndex = newHistory.findIndex(h => 
+      new Date(h.date).toDateString() === today.toDateString()
+    )
+
+    if (existingTodayIndex >= 0) {
+      newHistory[existingTodayIndex].maintained = todayMet
+    } else {
+      newHistory.push({ date: todayStr, maintained: todayMet })
+    }
+
+    // Check if streak is broken
+    const isStreakBroken = !yesterdayMet && 
+      lastStreakDate.toDateString() === yesterday.toDateString()
+
+    if (isStreakBroken) {
+      newStreak = 0
+    }
+
+    // Update current streak
+    if (todayMet) {
+      if (lastStreakDate.toDateString() === yesterday.toDateString() && yesterdayMet) {
+        newStreak += 1
+      } else if (lastStreakDate.toDateString() !== today.toDateString()) {
+        newStreak = 1
+      }
+    }
+
+    // Update streak data
+    const newStreakData = {
+      currentStreak: newStreak,
+      longestStreak: Math.max(newStreak, streakData.longestStreak),
+      lastStreakDate: todayStr,
+      streakHistory: newHistory
+    }
+
+    setStreakData(newStreakData)
+    localStorage.setItem('study-streak-data', JSON.stringify(newStreakData))
+  }
+
+  // Load streak data from localStorage
+  useEffect(() => {
+    const savedStreakData = localStorage.getItem('study-streak-data')
+    if (savedStreakData) {
+      setStreakData(JSON.parse(savedStreakData))
+    }
+  }, [])
+
+  // Update streak whenever time logs change
+  useEffect(() => {
+    updateStreak()
+  }, [timeLogs])
 
   return (
     <div className="container mx-auto px-4 py-8 bg-background text-foreground min-h-screen">
@@ -480,15 +889,29 @@ export default function Dashboard() {
           <ThemeToggle />
         </div>
         <h1 className="text-3xl font-bold mx-auto">Study Tracker</h1>
+        <div className="absolute right-0 flex items-center gap-2">
+          <SettingsDialog
+            settings={settings}
+            onUpdateSettings={handleUpdateSettings}
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => signOut()}
+            title="Sign out"
+          >
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
-      {/* Total Study Time and Questions Card */}
+      {/* Total Study Time, Questions, and Streak Card */}
       <Card className="mb-8">
         <CardContent className="py-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Total Study Time */}
             <div className="flex flex-col items-center justify-center">
-              <span className="text-4xl font-bold mb-2">{formatTime(totalStudyTime)}</span>
+              <span className="text-4xl font-bold mb-2">{formatTime(todayTotalTime)}</span>
               <div className="flex items-center text-muted-foreground">
                 <Clock className="mr-2 h-4 w-4" />
                 <span>Total Study Time</span>
@@ -496,42 +919,74 @@ export default function Dashboard() {
 
               {/* Subject-specific study times */}
               <div className="grid grid-cols-2 gap-x-6 gap-y-2 mt-4 w-full max-w-xs">
-                {Object.entries(todayStats.timeBySubject).map(([subject, time]) => (
-                  <div key={`time-${subject}`} className="flex items-center">
-                    <div
-                      className={`w-2 h-2 rounded-full mr-2 ${SUBJECT_COLORS[subject as Subject].split(" ")[0]}`}
-                    ></div>
-                    <span className="text-sm capitalize">{subject}:</span>
-                    <span className="text-sm font-medium ml-1">{formatTime(time)}</span>
-                  </div>
-                ))}
+                {Object.entries(todayStats.timeBySubject)
+                  .filter(([subject]) => 
+                    subject === "classes" || 
+                    Object.keys(examConfig.subjectMarks).includes(subject)
+                  )
+                  .map(([subject, time]) => (
+                    <div key={`time-${subject}`} className="flex items-center">
+                      <div
+                        className={`w-2 h-2 rounded-full mr-2 ${SUBJECT_COLORS[subject as Subject].split(" ")[0]}`}
+                      ></div>
+                      <span className="text-sm capitalize">{getSubjectDisplayName(subject)}:</span>
+                      <span className="text-sm font-medium ml-1">{formatTime(time)}</span>
+                    </div>
+                  ))}
               </div>
             </div>
 
             {/* Daily Question Goal */}
             <div className="flex flex-col items-center justify-center">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-baseline">
                 <span className="text-4xl font-bold">{todayStats.totalQuestionsForGoal}</span>
-                <span className="text-xl text-muted-foreground">/ {questionGoal.daily}</span>
+                <span className="text-xl text-muted-foreground ml-2">/ {questionGoal.daily}</span>
               </div>
               <div className="flex items-center text-muted-foreground">
                 <BookOpen className="mr-2 h-4 w-4" />
-                <span>Daily Question Goal</span>
+                <span>Questions Solved Today</span>
               </div>
 
               {/* Subject-specific question counts */}
               <div className="grid grid-cols-2 gap-x-6 gap-y-2 mt-4 w-full max-w-xs">
                 {Object.entries(todayStats.questionsBySubject)
-                  .filter(([subject]) => subject !== "classes") // Exclude classes from question counts
+                  .filter(([subject]) => 
+                    subject === "classes" || 
+                    Object.keys(examConfig.subjectMarks).includes(subject)
+                  )
                   .map(([subject, count]) => (
                     <div key={`questions-${subject}`} className="flex items-center">
                       <div
                         className={`w-2 h-2 rounded-full mr-2 ${SUBJECT_COLORS[subject as Subject].split(" ")[0]}`}
                       ></div>
-                      <span className="text-sm capitalize">{subject}:</span>
-                      <span className="text-sm font-medium ml-1">{count} questions</span>
+                      <span className="text-sm capitalize">{getSubjectDisplayName(subject)}:</span>
+                      <span className="text-sm font-medium ml-1">{count}</span>
                     </div>
                   ))}
+              </div>
+            </div>
+
+            {/* Streak Information */}
+            <div className="flex flex-col items-center justify-center">
+              <div className="flex items-baseline">
+                <span className="text-4xl font-bold">{streakData.currentStreak}</span>
+                <span className="text-xl text-muted-foreground ml-2">days</span>
+              </div>
+              <div className="flex items-center text-muted-foreground">
+                <Flame className="mr-2 h-4 w-4" />
+                <span>Current Streak</span>
+              </div>
+              <div className="mt-4 text-center">
+                <div className="text-sm text-muted-foreground">
+                  Longest Streak: {streakData.longestStreak} days
+                </div>
+                <div className="text-sm text-muted-foreground mt-2">
+                  Daily Goals:
+                  <br />
+                  {settings.streakConfig.minStudyHours}h study time
+                  <br />
+                  {settings.streakConfig.minQuestions} questions
+                </div>
               </div>
             </div>
           </div>
@@ -539,9 +994,10 @@ export default function Dashboard() {
       </Card>
 
       <Tabs defaultValue="timer" value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3 mb-8">
+        <TabsList className="grid w-full grid-cols-4 mb-8">
           <TabsTrigger value="timer">Study Timer</TabsTrigger>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
+          <TabsTrigger value="tests">Tests</TabsTrigger>
           <TabsTrigger value="insights">Insights</TabsTrigger>
         </TabsList>
 
@@ -551,63 +1007,156 @@ export default function Dashboard() {
             isRunning={isRunning}
             time={time}
             questionCount={questionCount}
-            tasks={tasks} // Pass tasks to StudyTimer
+            tasks={tasks}
+            questionGoal={questionGoal}
+            settings={settings}
             onChangeSubject={changeSubject}
             onStart={startTimer}
             onPause={pauseTimer}
             onQuestionCountChange={handleQuestionCountChange}
-            questionGoal={questionGoal}
             onUpdateQuestionGoal={updateQuestionGoal}
           />
         </TabsContent>
 
         <TabsContent value="tasks">
           <TaskManager
-            tasks={tasks}
+            tasks={todayTasks}
             onAddTask={addTask}
             onToggleComplete={toggleTaskCompletion}
             onDeleteTask={deleteTask}
           />
         </TabsContent>
 
-        <TabsContent value="insights">
-          <InsightsView
-            timeLogs={timeLogs}
-            tasks={tasks}
-            onDeleteLog={deleteStudyLog}
-            onEditLogEndTime={editStudyLogEndTime}
-            onEditLogQuestionCount={editStudyLogQuestionCount}
-            onEditLogNotes={editStudyLogNotes}
-            onAddManualLog={addManualStudyLog}
-            questionGoal={questionGoal}
-            onUpdateQuestionGoal={updateQuestionGoal}
+        <TabsContent value="tests">
+          <TestTracker
+            tests={tests}
+            settings={settings}
+            onAddTest={addTest}
+            onDeleteTest={deleteTest}
+            onEditTest={editTest}
           />
+        </TabsContent>
+
+        <TabsContent value="insights">
+          <Tabs defaultValue="overview">
+            <TabsList className="w-full grid grid-cols-4 mb-8">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="weekly">Weekly Report</TabsTrigger>
+              <TabsTrigger value="daily">Daily Report</TabsTrigger>
+              <TabsTrigger value="logs">Study Logs</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview">
+              <InsightsView
+                timeLogs={timeLogs}
+                tasks={tasks}
+                tests={tests}
+                questionGoal={questionGoal}
+                settings={settings}
+                onDeleteLog={deleteStudyLog}
+                onEditLogEndTime={editStudyLogEndTime}
+                onEditLogQuestionCount={editStudyLogQuestionCount}
+                onEditLogNotes={editStudyLogNotes}
+                onAddManualLog={addManualStudyLog}
+                onUpdateQuestionGoal={updateQuestionGoal}
+              />
+            </TabsContent>
+
+            <TabsContent value="weekly">
+              <WeeklyReport
+                timeLogs={timeLogs}
+                tasks={tasks}
+                tests={tests}
+                questionGoal={questionGoal}
+              />
+            </TabsContent>
+
+            <TabsContent value="daily">
+              <DailyReport
+                timeLogs={timeLogs}
+                tasks={tasks}
+                tests={tests}
+                questionGoal={questionGoal}
+              />
+            </TabsContent>
+
+            <TabsContent value="logs">
+              <StudyLogs
+                logs={timeLogs}
+                tasks={tasks}
+                onDeleteLog={deleteStudyLog}
+                onEditLogEndTime={editStudyLogEndTime}
+                onEditLogQuestionCount={editStudyLogQuestionCount}
+                onEditLogNotes={editStudyLogNotes}
+                onAddManualLog={addManualStudyLog}
+              />
+            </TabsContent>
+          </Tabs>
         </TabsContent>
       </Tabs>
 
       {/* Notes Dialog */}
       <Dialog open={showNotesDialog} onOpenChange={setShowNotesDialog}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Session Notes</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="notes">Add notes about your progress on "{goalTitleRef.current}"</Label>
+              <Label htmlFor="notes">Add notes for this study session</Label>
               <Textarea
                 id="notes"
-                placeholder="What did you accomplish? What challenges did you face? What's next?"
                 value={sessionNotes}
                 onChange={(e) => setSessionNotes(e.target.value)}
-                className="min-h-[100px]"
+                placeholder="What did you work on? Any challenges or insights?"
               />
             </div>
           </div>
-          <DialogFooter className="flex justify-between sm:justify-between">
-            <Button variant="outline" onClick={handleSkipNotes}>
-              Skip
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                // Log without notes
+                if (pendingLogRef.current) {
+                  logStudyTime(
+                    pendingLogRef.current.subject,
+                    pendingLogRef.current.duration,
+                    pendingLogRef.current.startTime,
+                    pendingLogRef.current.endTime,
+                    pendingLogRef.current.questionCount,
+                    pendingLogRef.current.goalId,
+                    pendingLogRef.current.goalTitle,
+                  )
+                }
+                setShowNotesDialog(false)
+                pendingLogRef.current = null
+                setSessionNotes("")
+              }}
+            >
+              Skip Notes
             </Button>
-            <Button onClick={handleSaveNotes}>Save Notes</Button>
+            <Button
+              onClick={() => {
+                // Log with notes
+                if (pendingLogRef.current) {
+                  logStudyTime(
+                    pendingLogRef.current.subject,
+                    pendingLogRef.current.duration,
+                    pendingLogRef.current.startTime,
+                    pendingLogRef.current.endTime,
+                    pendingLogRef.current.questionCount,
+                    pendingLogRef.current.goalId,
+                    pendingLogRef.current.goalTitle,
+                    sessionNotes,
+                  )
+                }
+                setShowNotesDialog(false)
+                pendingLogRef.current = null
+                setSessionNotes("")
+              }}
+            >
+              Save Notes
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
